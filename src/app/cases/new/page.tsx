@@ -9,7 +9,7 @@ export default function NewCasePage() {
     <CaseForm
       mode="create"
       onSaved={(id) => {
-        router.push(`/cases/${id}`);
+        router.push(`/cases?id=${id}`);
       }}
     />
   );
