@@ -156,5 +156,3 @@ export default function FiltersPage() {
     </div>
   );
 }
-
-export const FILTERS_STORAGE_KEY = KEY;
