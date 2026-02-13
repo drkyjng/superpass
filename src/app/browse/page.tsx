@@ -179,7 +179,7 @@ export default function BrowsePage() {
                   return (
                     <Link
                       key={c.id}
-                      href={`/cases/${c.id}`}
+                      href={`/case?id=${c.id}`}
                       className={cn(
                         "block rounded-2xl border p-3 transition hover:bg-neutral-50",
                         discharged ? "border-neutral-200 bg-neutral-50" : "border-neutral-200 bg-white"
