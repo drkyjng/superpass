@@ -9,24 +9,31 @@ import { useRouter } from "next/navigation";
 export default function AccountPage() {
   const supabase = useMemo(() => createClient(), []);
   const router = useRouter();
+
   const [email, setEmail] = useState<string>("—");
+  const [isAuthed, setIsAuthed] = useState(false);
 
   useEffect(() => {
     (async () => {
       const { data } = await supabase.auth.getUser();
-      setEmail(data.user?.email ?? "—");
+      const u = data.user;
+      setEmail(u?.email ?? "—");
+      setIsAuthed(!!u);
     })();
   }, [supabase]);
 
   async function signOut() {
     await supabase.auth.signOut();
-    router.push("/login");
+    setEmail("—");
+    setIsAuthed(false);
+    router.push("/login?next=/account");
   }
 
   return (
     <div className="space-y-4">
       <div className="rounded-2xl bg-white p-4 shadow-soft">
         <div className="text-lg font-semibold">Account</div>
+
         <div className="mt-2 text-sm text-neutral-700">
           <div>
             <span className="font-medium">Email:</span> {email}
@@ -37,9 +44,15 @@ export default function AccountPage() {
         </div>
 
         <div className="mt-4">
-          <Button variant="secondary" className="w-full" onClick={signOut}>
-            Sign out
-          </Button>
+          {isAuthed ? (
+            <Button variant="secondary" className="w-full" onClick={signOut}>
+              Sign out
+            </Button>
+          ) : (
+            <Button className="w-full" onClick={() => router.push("/login?next=/account")}>
+              Sign in
+            </Button>
+          )}
         </div>
       </div>
 
