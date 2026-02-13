@@ -9,7 +9,7 @@ import { HOSPITALS, SPECIALTIES, subspecialtiesFor } from "@/lib/constants";
 
 type Filters = {
   specialty: "" | "MED" | "SUR";
-  subspecialty: "";
+  subspecialty: "" | string;
   hospital: "" | "QMH" | "TWH";
   ward: string;
   clerkable: "" | "true" | "false";
