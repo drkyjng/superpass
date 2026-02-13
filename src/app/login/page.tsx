@@ -29,19 +29,6 @@ export default function LoginPage() {
     router.push(next);
   }
 
-  async function signInWithGoogle() {
-    setBusy(true);
-    setError(null);
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: `${location.origin}/auth/callback?next=${encodeURIComponent(next)}`
-      }
-    });
-    setBusy(false);
-    if (error) setError(error.message);
-  }
-
   return (
     <div className="space-y-4">
       <div className="rounded-2xl bg-white p-4 shadow-soft">
@@ -68,23 +55,19 @@ export default function LoginPage() {
             placeholder="••••••••"
             autoComplete="current-password"
           />
+
           {error ? (
             <div className="rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700">
               {error}
             </div>
           ) : null}
-          <Button className="w-full" onClick={signInWithPassword} disabled={busy || !email || !password}>
+
+          <Button
+            className="w-full"
+            onClick={signInWithPassword}
+            disabled={busy || !email || !password}
+          >
             Sign in
-          </Button>
-
-          <div className="flex items-center gap-3">
-            <div className="h-px flex-1 bg-neutral-200" />
-            <div className="text-xs text-neutral-500">or</div>
-            <div className="h-px flex-1 bg-neutral-200" />
-          </div>
-
-          <Button className="w-full" variant="secondary" onClick={signInWithGoogle} disabled={busy}>
-            Sign in with Google
           </Button>
         </div>
       </div>
@@ -92,7 +75,7 @@ export default function LoginPage() {
       <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-xs text-neutral-600">
         <div className="font-semibold text-neutral-800">First-time users</div>
         <div className="mt-1">
-          If public signups are disabled (recommended), you must be invited from Supabase dashboard.
+          If public signups are disabled, you must be invited from the Supabase dashboard.
           The invite email lets you set a password.
         </div>
       </div>
