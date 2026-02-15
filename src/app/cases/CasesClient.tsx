@@ -1,376 +1,172 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
+import { useSearchParams, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/browser";
 import { CaseRow } from "@/lib/types";
+import { Button } from "@/components/ui/Button";
 import { Chip } from "@/components/ui/Chip";
-import { cn, formatDate, isDischarged } from "@/lib/utils";
-import { SPECIALTIES, MED_SUBS, SUR_SUBS } from "@/lib/constants";
-import { loadFilters } from "@/lib/filters";
-import { Settings2 } from "lucide-react";
+import { CaseForm } from "@/components/CaseForm";
+import { formatDate, formatDateTime } from "@/lib/utils";
 
-type Folder = { specialty: "MED" | "SUR"; subspecialty: string };
-
-function folderList(): Folder[] {
-  const out: Folder[] = [];
-  for (const ss of MED_SUBS) out.push({ specialty: "MED", subspecialty: ss });
-  for (const ss of SUR_SUBS) out.push({ specialty: "SUR", subspecialty: ss });
-  return out;
-}
-
-function applyOrdering(rows: CaseRow[]) {
-  // Group by hospital + ward, then within each group:
-  // current admissions first, then discharged, each sorted by date_of_admission asc.
-  const byGroup = new Map<string, { hospital: CaseRow["hospital"]; ward: string; rows: CaseRow[] }>();
-
-  for (const r of rows) {
-    const ward = r.ward.trim();
-    const key = `${r.hospital}::${ward}`;
-    if (!byGroup.has(key)) byGroup.set(key, { hospital: r.hospital, ward, rows: [] });
-    byGroup.get(key)!.rows.push(r);
-  }
-
-  const groups = Array.from(byGroup.values()).sort((a, b) => {
-    const h = a.hospital.localeCompare(b.hospital);
-    if (h !== 0) return h;
-    return a.ward.localeCompare(b.ward, undefined, { numeric: true });
-  });
-
-  const ordered: { hospital: CaseRow["hospital"]; ward: string; rows: CaseRow[] }[] = [];
-  for (const g of groups) {
-    const list = g.rows;
-    const current = list
-      .filter((x) => !isDischarged(x.date_of_discharge))
-      .sort((a, b) => a.date_of_admission.localeCompare(b.date_of_admission) || a.created_at.localeCompare(b.created_at));
-    const discharged = list
-      .filter((x) => isDischarged(x.date_of_discharge))
-      .sort((a, b) => a.date_of_admission.localeCompare(b.date_of_admission) || a.created_at.localeCompare(b.created_at));
-    ordered.push({ hospital: g.hospital, ward: g.ward, rows: [...current, ...discharged] });
-  }
-  return ordered;
-}
-
-export default function BrowsePage() {
+export default function CaseDetailPage() {
+  const sp = useSearchParams();
+  const id = sp.get("id"); // <- from /case?id=...
   const supabase = useMemo(() => createClient(), []);
-  const [active, setActive] = useState<Folder>({ specialty: "MED", subspecialty: "CARD" });
+  const router = useRouter();
+
+  const [row, setRow] = useState<CaseRow | null>(null);
   const [loading, setLoading] = useState(true);
-  const [rows, setRows] = useState<CaseRow[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [filtersVersion, setFiltersVersion] = useState(0);
+  const [editing, setEditing] = useState(false);
+  const [deleteErr, setDeleteErr] = useState<string | null>(null);
+  const [canDelete, setCanDelete] = useState(false);
 
-  // (3) Per-user clerked ticks
-  const [meId, setMeId] = useState<string | null>(null);
-  const [clerked, setClerked] = useState<Set<string>>(new Set());
+  async function load() {
+    setLoading(true);
+    setError(null);
 
-  // (5) Notifications
-  const [unread, setUnread] = useState(0);
-  const [latestNotifs, setLatestNotifs] = useState<
-    { id: string; title: string; body: string; created_at: string }[]
-  >([]);
-
-  const folders = useMemo(() => folderList(), []);
-
-  useEffect(() => {
-    const onFocus = () => setFiltersVersion((v) => v + 1);
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, []);
-
-  async function loadClerked(uid: string | null) {
-    setMeId(uid);
-    if (!uid) {
-      setClerked(new Set());
-      return;
-    }
-    const { data: ticks, error: tickErr } = await supabase
-      .from("case_clerks")
-      .select("case_id")
-      .eq("user_id", uid);
-
-    if (tickErr) {
-      console.warn("Failed loading clerked ticks:", tickErr.message);
-      setClerked(new Set());
-      return;
-    }
-    setClerked(new Set((ticks ?? []).map((t: any) => t.case_id)));
-  }
-
-  async function toggleClerked(caseId: string, checked: boolean) {
-    if (!meId) return;
-
-    if (checked) {
-      const { error } = await supabase.from("case_clerks").insert({
-        user_id: meId,
-        case_id: caseId,
-      });
-      if (error) {
-        alert(error.message);
-        return;
-      }
-      setClerked((prev) => new Set(prev).add(caseId));
-    } else {
-      const { error } = await supabase
-        .from("case_clerks")
-        .delete()
-        .eq("user_id", meId)
-        .eq("case_id", caseId);
-
-      if (error) {
-        alert(error.message);
-        return;
-      }
-      setClerked((prev) => {
-        const n = new Set(prev);
-        n.delete(caseId);
-        return n;
-      });
-    }
-  }
-
-  async function loadNotifications(uid: string | null) {
-    if (!uid) {
-      setUnread(0);
-      setLatestNotifs([]);
-      return;
-    }
-
-    const { count, error: cntErr } = await supabase
-      .from("notifications")
-      .select("id", { count: "exact", head: true })
-      .eq("user_id", uid)
-      .is("read_at", null);
-
-    if (!cntErr) setUnread(count ?? 0);
+    const { data: u } = await supabase.auth.getUser();
+    const uid = u.user?.id ?? null;
 
     const { data, error } = await supabase
-      .from("notifications")
-      .select("id,title,body,created_at")
-      .eq("user_id", uid)
-      .is("read_at", null)
-      .order("created_at", { ascending: false })
-      .limit(3);
+      .from("cases")
+      .select(
+        "id,specialty,subspecialty,hospital,ward,bed,name,age,sex,date_of_admission,date_of_discharge,clerkable,high_yield,conditions,signs,remarks,created_at,updated_at,created_by,updated_by,created_by_profile:profiles!cases_created_by_fkey(display_name),updated_by_profile:profiles!cases_updated_by_fkey(display_name)"
+      )
+      .eq("id", id)
+      .single();
 
-    if (!error) setLatestNotifs((data ?? []) as any);
-  }
-
-  async function markAllNotificationsRead() {
-    if (!meId) return;
-    const now = new Date().toISOString();
-    const { error } = await supabase
-      .from("notifications")
-      .update({ read_at: now })
-      .eq("user_id", meId)
-      .is("read_at", null);
+    setLoading(false);
 
     if (error) {
-      alert(error.message);
+      setError(error.message);
       return;
     }
-    setUnread(0);
-    setLatestNotifs([]);
+    const r = data as any as CaseRow;
+    setRow(r);
+    setCanDelete(!!uid && uid === r.created_by);
   }
 
   useEffect(() => {
-    (async () => {
-      setLoading(true);
-      setError(null);
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
-      const f = loadFilters();
+  async function doDelete() {
+    if (!row) return;
+    const ok = confirm("Delete this case? This cannot be undone.");
+    if (!ok) return;
 
-      let q = supabase
-        .from("cases")
-        .select(
-          "id,specialty,subspecialty,hospital,ward,bed,name,age,sex,date_of_admission,date_of_discharge,clerkable,high_yield,conditions,signs,remarks,created_at,updated_at,created_by,updated_by,created_by_profile:profiles!cases_created_by_fkey(display_name),updated_by_profile:profiles!cases_updated_by_fkey(display_name)"
-        )
-        .eq("specialty", active.specialty)
-        .eq("subspecialty", active.subspecialty);
+    setDeleteErr(null);
+    const { error } = await supabase.from("cases").delete().eq("id", row.id);
+    if (error) {
+      setDeleteErr(error.message);
+      return;
+    }
+    router.push("/browse");
+  }
 
-      if (f.specialty) q = q.eq("specialty", f.specialty);
-      if (f.subspecialty) q = q.eq("subspecialty", f.subspecialty);
-      if (f.hospital) q = q.eq("hospital", f.hospital);
-      if (f.ward.trim()) q = q.eq("ward", f.ward.trim());
-      if (f.clerkable) q = q.eq("clerkable", f.clerkable === "true");
-      if (f.high_yield) q = q.eq("high_yield", f.high_yield === "true");
+  if (loading) {
+    return <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm">Loading…</div>;
+  }
+  if (error || !row) {
+    return <div className="rounded-2xl border border-red-100 bg-red-50 p-4 text-sm text-red-700">{error ?? "Not found"}</div>;
+  }
 
-      if (f.q.trim()) {
-        const term = f.q.trim().replaceAll(",", " ");
-        const like = `%${term}%`;
-        q = q.or(`name.ilike.${like},conditions.ilike.${like},signs.ilike.${like},remarks.ilike.${like}`);
-      }
-
-      q = q
-        .order("ward", { ascending: true })
-        .order("date_of_admission", { ascending: true })
-        .order("created_at", { ascending: true });
-
-      const { data, error } = await q;
-      setLoading(false);
-      if (error) {
-        setError(error.message);
-        return;
-      }
-      setRows((data ?? []) as any);
-
-      // Load user-dependent things (clerked + notifications)
-      const { data: userData } = await supabase.auth.getUser();
-      const uid = userData.user?.id ?? null;
-      await loadClerked(uid);
-      await loadNotifications(uid);
-    })();
-  }, [supabase, active, filtersVersion]);
-
-  const ordered = useMemo(() => applyOrdering(rows), [rows]);
+  if (editing) {
+    return (
+      <div className="space-y-3">
+        <CaseForm
+          mode="edit"
+          initial={row}
+          onSaved={() => {
+            setEditing(false);
+            load();
+          }}
+        />
+        <Button variant="secondary" className="w-full" onClick={() => setEditing(false)}>
+          Cancel
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3">
-      <div className="rounded-2xl bg-white p-3 shadow-soft">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-sm font-semibold">Folders</div>
-            <div className="text-xs text-neutral-600">MED / SUR → subspecialty</div>
-          </div>
-          <Link
-            href="/filters"
-            className="inline-flex items-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm hover:bg-neutral-50"
-          >
-            <Settings2 size={16} />
-            Filters
-          </Link>
-        </div>
-
-        <div className="mt-3 flex gap-2">
-          {SPECIALTIES.map((s) => (
-            <button
-              key={s}
-              className={cn(
-                "flex-1 rounded-xl border px-3 py-2 text-sm font-medium",
-                active.specialty === s
-                  ? "border-neutral-900 bg-neutral-900 text-white"
-                  : "border-neutral-200 bg-neutral-50 text-neutral-800 hover:bg-white"
-              )}
-              onClick={() => {
-                if (s === "MED") setActive({ specialty: "MED", subspecialty: "CARD" });
-                else setActive({ specialty: "SUR", subspecialty: "PRS" });
-              }}
-            >
-              {s}
-            </button>
-          ))}
-        </div>
-
-        <div className="mt-3 grid grid-cols-3 gap-2">
-          {(active.specialty === "MED" ? MED_SUBS : SUR_SUBS).map((ss) => (
-            <button
-              key={ss}
-              className={cn(
-                "rounded-xl border px-2 py-2 text-xs font-semibold",
-                active.subspecialty === ss
-                  ? "border-neutral-900 bg-neutral-900 text-white"
-                  : "border-neutral-200 bg-white hover:bg-neutral-50"
-              )}
-              onClick={() => setActive((a) => ({ ...a, subspecialty: ss }))}
-            >
-              {ss}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {unread > 0 ? (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="font-semibold">High-yield notifications ({unread})</div>
-              <div className="mt-1 space-y-1 text-xs text-amber-900/90">
-                {latestNotifs.map((n) => (
-                  <div key={n.id} className="truncate">
-                    <span className="font-medium">{n.title}:</span> {n.body}
-                  </div>
-                ))}
-              </div>
+      <div className="rounded-2xl bg-white p-4 shadow-soft space-y-2">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="text-lg font-semibold">
+              Ward {row.ward} · Bed {row.bed}
             </div>
-
-            <button
-              className="shrink-0 rounded-xl border border-amber-200 bg-white px-3 py-2 text-xs hover:bg-amber-50"
-              onClick={markAllNotificationsRead}
-            >
-              Mark read
-            </button>
+            <div className="mt-1 text-sm text-neutral-700">
+              {row.name} · {row.age}/{row.sex}
+            </div>
+            <div className="mt-1 text-xs text-neutral-500">
+              {row.specialty}/{row.subspecialty} · {row.hospital}
+            </div>
+          </div>
+          <div className="flex flex-col items-end gap-1">
+            {row.high_yield ? <Chip tone="good">High-yield</Chip> : null}
+            {!row.clerkable ? <Chip tone="warn">Not clerkable</Chip> : null}
           </div>
         </div>
-      ) : null}
 
-      {loading ? (
-        <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-700">Loading…</div>
-      ) : error ? (
-        <div className="rounded-2xl border border-red-100 bg-red-50 p-4 text-sm text-red-700">{error}</div>
-      ) : ordered.length === 0 ? (
-        <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-700">
-          No cases in this folder (with current filters).
+        <div className="mt-2 space-y-1 text-sm">
+          <div>
+            <span className="font-semibold">Admission:</span> {formatDate(row.date_of_admission)}
+          </div>
+          <div>
+            <span className="font-semibold">Discharge:</span> {formatDate(row.date_of_discharge)}
+          </div>
         </div>
-      ) : (
-        <div className="space-y-3">
-          {ordered.map(({ hospital, ward, rows }) => (
-            <section key={`${hospital}::${ward}`} className="rounded-2xl bg-white p-3 shadow-soft">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold">
-                  {hospital} Ward {ward}
-                </div>
-                <Chip>{rows.length} cases</Chip>
-              </div>
 
-              <div className="mt-2 space-y-2">
-                {rows.map((c) => {
-                  const discharged = isDischarged(c.date_of_discharge);
-                  return (
-                    <div key={c.id} className="flex items-stretch gap-2">
-                      <div className="flex items-center pl-1">
-                        <input
-                          type="checkbox"
-                          className="h-5 w-5"
-                          checked={clerked.has(c.id)}
-                          onChange={(e) => toggleClerked(c.id, e.target.checked)}
-                          onClick={(e) => e.stopPropagation()}
-                          disabled={!meId}
-                          title={!meId ? "Sign in to save clerked ticks" : "Mark as clerked"}
-                        />
-                      </div>
-
-                      <Link
-                        href={`/cases?id=${c.id}`}
-                        className={cn(
-                          "block flex-1 rounded-2xl border p-3 transition hover:bg-neutral-50",
-                          discharged ? "border-neutral-200 bg-neutral-50" : "border-neutral-200 bg-white"
-                        )}
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-semibold">
-                              Bed {c.bed} · {c.name} · {c.age}/{c.sex}
-                            </div>
-                            <div className="mt-1 text-xs text-neutral-500">
-                              Adm: {formatDate(c.date_of_admission)} · Dis: {formatDate(c.date_of_discharge)}
-                            </div>
-                          </div>
-
-                          <div className="flex shrink-0 flex-col items-end gap-1">
-                            {c.high_yield ? <Chip tone="good">High-yield</Chip> : null}
-                            {!c.clerkable ? <Chip tone="warn">Not clerkable</Chip> : null}
-                          </div>
-                        </div>
-                      </Link>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          ))}
+        <div className="mt-3 space-y-2">
+          <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-3">
+            <div className="text-xs font-semibold text-neutral-700">Condition(s)</div>
+            <div className="mt-1 text-sm text-neutral-800 whitespace-pre-wrap">{row.conditions}</div>
+          </div>
+          <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-3">
+            <div className="text-xs font-semibold text-neutral-700">Sign(s)</div>
+            <div className="mt-1 text-sm text-neutral-800 whitespace-pre-wrap">{row.signs}</div>
+          </div>
+          {row.remarks ? (
+            <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-3">
+              <div className="text-xs font-semibold text-neutral-700">Remarks</div>
+              <div className="mt-1 text-sm text-neutral-800 whitespace-pre-wrap">{row.remarks}</div>
+            </div>
+          ) : null}
         </div>
-      )}
 
-      <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-xs text-neutral-600">
-        Ordering: Hospital+Ward → current admissions → discharged → date of admission.
+        <div className="mt-3 rounded-2xl border border-neutral-200 bg-white p-3 text-xs text-neutral-600">
+          <div>
+            <span className="font-semibold text-neutral-800">Created:</span> {formatDateTime(row.created_at)} ·{" "}
+            {row.created_by_profile?.display_name ?? "—"}
+          </div>
+          <div className="mt-1">
+            <span className="font-semibold text-neutral-800">Last update:</span> {formatDateTime(row.updated_at)} ·{" "}
+            {row.updated_by_profile?.display_name ?? "—"}
+          </div>
+        </div>
+
+        <div className="mt-3 space-y-2">
+          <Button className="w-full" onClick={() => setEditing(true)}>
+            Edit
+          </Button>
+          {canDelete ? (
+            <Button className="w-full" variant="danger" onClick={doDelete}>
+              Delete (creator only)
+            </Button>
+          ) : (
+            <Button className="w-full" variant="secondary" disabled>
+              Delete (creator only)
+            </Button>
+          )}
+          {deleteErr ? (
+            <div className="rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700">{deleteErr}</div>
+          ) : null}
+        </div>
       </div>
     </div>
   );
