@@ -12,6 +12,8 @@ import { Settings2 } from "lucide-react";
 
 type Folder = { specialty: "MED" | "SUR"; subspecialty: string };
 
+type NotifRow = { id: string; title: string; body: string; created_at: string };
+
 function folderList(): Folder[] {
   const out: Folder[] = [];
   for (const ss of MED_SUBS) out.push({ specialty: "MED", subspecialty: ss });
@@ -20,8 +22,6 @@ function folderList(): Folder[] {
 }
 
 function applyOrdering(rows: CaseRow[]) {
-  // Group by hospital + ward, then within each group:
-  // current admissions first, then discharged, each sorted by date_of_admission asc.
   const byGroup = new Map<string, { hospital: CaseRow["hospital"]; ward: string; rows: CaseRow[] }>();
 
   for (const r of rows) {
@@ -63,9 +63,9 @@ export default function BrowsePage() {
   const [meId, setMeId] = useState<string | null>(null);
   const [clerked, setClerked] = useState<Set<string>>(new Set());
 
-  // (5) Notifications
+  // (5) High-yield notifications (unread banner)
   const [unread, setUnread] = useState(0);
-  const [latestNotifs, setLatestNotifs] = useState<{ id: string; title: string; body: string; created_at: string }[]>([]);
+  const [latestNotifs, setLatestNotifs] = useState<NotifRow[]>([]);
 
   useEffect(() => {
     const onFocus = () => setFiltersVersion((v) => v + 1);
@@ -80,6 +80,7 @@ export default function BrowsePage() {
       return;
     }
     const { data: ticks, error: tickErr } = await supabase.from("case_clerks").select("case_id").eq("user_id", uid);
+
     if (tickErr) {
       console.warn("Failed loading clerked ticks:", tickErr.message);
       setClerked(new Set());
@@ -93,17 +94,37 @@ export default function BrowsePage() {
 
     if (checked) {
       const { error } = await supabase.from("case_clerks").insert({ user_id: meId, case_id: caseId });
-      if (error) return alert(error.message);
+      if (error) {
+        alert(error.message);
+        return;
+      }
       setClerked((prev) => new Set(prev).add(caseId));
     } else {
       const { error } = await supabase.from("case_clerks").delete().eq("user_id", meId).eq("case_id", caseId);
-      if (error) return alert(error.message);
+      if (error) {
+        alert(error.message);
+        return;
+      }
       setClerked((prev) => {
         const n = new Set(prev);
         n.delete(caseId);
         return n;
       });
     }
+  }
+
+  async function setDischarge(caseId: string, discharge: boolean) {
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const payload = discharge ? { date_of_discharge: today } : { date_of_discharge: null };
+
+    const { error } = await supabase.from("cases").update(payload).eq("id", caseId);
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    // simplest: refresh
+    window.location.reload();
   }
 
   async function loadNotifications(uid: string | null) {
@@ -113,14 +134,20 @@ export default function BrowsePage() {
       return;
     }
 
+    // Count unread
     const { count, error: cntErr } = await supabase
       .from("notifications")
       .select("id", { count: "exact", head: true })
       .eq("user_id", uid)
       .is("read_at", null);
 
-    if (!cntErr) setUnread(count ?? 0);
+    if (cntErr) {
+      console.warn("Failed loading notifications count:", cntErr.message);
+    } else {
+      setUnread(count ?? 0);
+    }
 
+    // Fetch latest unread (show up to 3)
     const { data, error } = await supabase
       .from("notifications")
       .select("id,title,body,created_at")
@@ -129,7 +156,12 @@ export default function BrowsePage() {
       .order("created_at", { ascending: false })
       .limit(3);
 
-    if (!error) setLatestNotifs((data ?? []) as any);
+    if (error) {
+      console.warn("Failed loading notifications list:", error.message);
+      setLatestNotifs([]);
+      return;
+    }
+    setLatestNotifs((data ?? []) as any);
   }
 
   async function markAllNotificationsRead() {
@@ -141,11 +173,44 @@ export default function BrowsePage() {
       .eq("user_id", meId)
       .is("read_at", null);
 
-    if (error) return alert(error.message);
-
+    if (error) {
+      alert(error.message);
+      return;
+    }
     setUnread(0);
     setLatestNotifs([]);
   }
+
+  // (5) Realtime: when a new notification is inserted for THIS user, update banner immediately.
+  useEffect(() => {
+    if (!meId) return;
+
+    const channel = supabase
+      .channel(`notifs:${meId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "notifications",
+          filter: `user_id=eq.${meId}`,
+        },
+        (payload) => {
+          const n = payload.new as any as NotifRow;
+          // only show unread ones (trigger inserts unread by default; still safe)
+          setUnread((u) => u + 1);
+          setLatestNotifs((prev) => {
+            const next = [n, ...prev.filter((x) => x.id !== n.id)];
+            return next.slice(0, 3);
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [supabase, meId]);
 
   useEffect(() => {
     (async () => {
@@ -183,10 +248,9 @@ export default function BrowsePage() {
         setError(error.message);
         return;
       }
-
       setRows((data ?? []) as any);
 
-      // user-dependent fetches
+      // Load user-dependent state
       const { data: userData } = await supabase.auth.getUser();
       const uid = userData.user?.id ?? null;
       await loadClerked(uid);
@@ -247,6 +311,7 @@ export default function BrowsePage() {
         </div>
       </div>
 
+      {/* (5) Banner for new High-yield notifications */}
       {unread > 0 ? (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
           <div className="flex items-start justify-between gap-3">
@@ -276,7 +341,9 @@ export default function BrowsePage() {
       ) : error ? (
         <div className="rounded-2xl border border-red-100 bg-red-50 p-4 text-sm text-red-700">{error}</div>
       ) : ordered.length === 0 ? (
-        <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-700">No cases in this folder (with current filters).</div>
+        <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-700">
+          No cases in this folder (with current filters).
+        </div>
       ) : (
         <div className="space-y-3">
           {ordered.map(({ hospital, ward, rows }) => (
@@ -291,6 +358,7 @@ export default function BrowsePage() {
               <div className="mt-2 space-y-2">
                 {rows.map((c) => {
                   const discharged = isDischarged(c.date_of_discharge);
+
                   return (
                     <div key={c.id} className="flex items-stretch gap-2">
                       <div className="flex items-center pl-1">
@@ -317,14 +385,24 @@ export default function BrowsePage() {
                             <div className="truncate text-sm font-semibold">
                               Bed {c.bed} · {c.name} · {c.age}/{c.sex}
                             </div>
-                            <div className="mt-1 text-xs text-neutral-500">
-                              Adm: {formatDate(c.date_of_admission)} · Dis: {formatDate(c.date_of_discharge)}
-                            </div>
+                            <div className="mt-1 text-xs text-neutral-500">Adm: {formatDate(c.date_of_admission)}</div>
+                            <div className="mt-1 text-xs text-neutral-500">Dis: {formatDate(c.date_of_discharge)}</div>
                           </div>
 
                           <div className="flex shrink-0 flex-col items-end gap-1">
                             {c.high_yield ? <Chip tone="good">High-yield</Chip> : null}
                             {!c.clerkable ? <Chip tone="warn">Not clerkable</Chip> : null}
+
+                            <button
+                              className="mt-1 rounded-xl border border-neutral-200 bg-white px-2 py-1 text-xs"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setDischarge(c.id, !discharged);
+                              }}
+                            >
+                              {discharged ? "Click if not discharged" : "Click if discharged"}
+                            </button>
                           </div>
                         </div>
                       </Link>
