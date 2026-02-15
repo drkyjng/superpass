@@ -9,16 +9,40 @@ import { Input } from "@/components/ui/Input";
 export default function InviteClient() {
   const supabase = useMemo(() => createClient(), []);
   const router = useRouter();
+
+  const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    // If Supabase detects session in URL automatically, it will be available after load.
-    // We just show UI; user sets password.
-  }, []);
+    // Prefill display name if profile already exists (e.g. user revisiting invite flow)
+    (async () => {
+      const { data: u } = await supabase.auth.getUser();
+      if (!u.user) return;
 
-  async function setNewPassword() {
+      const { data: p } = await supabase
+        .from("profiles")
+        .select("display_name")
+        .eq("id", u.user.id)
+        .maybeSingle();
+
+      if (p?.display_name) setDisplayName(p.display_name);
+    })();
+  }, [supabase]);
+
+  async function completeSetup() {
+    const name = displayName.trim();
+
+    if (!name) {
+      setMsg("Please enter a Profile Name.");
+      return;
+    }
+    if (password.length < 8) {
+      setMsg("Password must be at least 8 characters.");
+      return;
+    }
+
     setBusy(true);
     setMsg(null);
 
@@ -29,24 +53,46 @@ export default function InviteClient() {
       return;
     }
 
-    const { error } = await supabase.auth.updateUser({ password });
+    // 1) Set password
+    const { error: pwErr } = await supabase.auth.updateUser({ password });
+    if (pwErr) {
+      setBusy(false);
+      setMsg(pwErr.message);
+      return;
+    }
+
+    // 2) Require profile name at registration time: write to profiles
+    const { error: profErr } = await supabase
+      .from("profiles")
+      .upsert({ id: data.user.id, display_name: name }, { onConflict: "id" });
+
+    if (profErr) {
+      setBusy(false);
+      setMsg(profErr.message);
+      return;
+    }
+
     setBusy(false);
-
-    if (error) return setMsg(error.message);
-
-    setMsg("Password set. Redirecting…");
+    setMsg("Setup complete. Redirecting…");
     router.push("/browse");
   }
 
   return (
     <div className="space-y-4">
       <div className="rounded-2xl bg-white p-4 shadow-soft">
-        <div className="text-lg font-semibold">Set your password</div>
+        <div className="text-lg font-semibold">Finish your account setup</div>
         <div className="mt-1 text-sm text-neutral-600">
-          You were invited. Set a password to finish account setup.
+          You were invited. Please set a Profile Name and password to complete registration.
         </div>
 
         <div className="mt-4 space-y-3">
+          <Input
+            label="Profile Name"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="Justin"
+          />
+
           <Input
             label="New password"
             type="password"
@@ -54,9 +100,15 @@ export default function InviteClient() {
             onChange={(e) => setPassword(e.target.value)}
             placeholder="••••••••"
           />
+
           {msg ? <div className="text-sm text-neutral-700">{msg}</div> : null}
-          <Button className="w-full" onClick={setNewPassword} disabled={busy || password.length < 8}>
-            Save password
+
+          <Button
+            className="w-full"
+            onClick={completeSetup}
+            disabled={busy || password.length < 8 || !displayName.trim()}
+          >
+            Complete setup
           </Button>
         </div>
       </div>
