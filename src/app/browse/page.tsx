@@ -58,6 +58,9 @@ export default function BrowsePage() {
   const [rows, setRows] = useState<CaseRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [filtersVersion, setFiltersVersion] = useState(0);
+  const [showDischarged, setShowDischarged] = useState(false);
+  const visibleRows = rows.filter((c) => showDischarged || !isDischarged(c.date_of_discharge));
+if (visibleRows.length === 0) return null;
 
   // (3) Per-user clerked ticks
   const [meId, setMeId] = useState<string | null>(null);
@@ -268,13 +271,22 @@ export default function BrowsePage() {
             <div className="text-sm font-semibold">Folders</div>
             <div className="text-xs text-neutral-600">MED / SUR → subspecialty</div>
           </div>
-          <Link
-            href="/filters"
-            className="inline-flex items-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm hover:bg-neutral-50"
-          >
-            <Settings2 size={16} />
-            Filters
-          </Link>
+    <div className="flex items-center gap-2">
+      <Link
+        href="/filters"
+        className="inline-flex items-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm hover:bg-neutral-50"
+      >
+        <Settings2 size={16} />
+        Filters
+      </Link>
+    
+      <button
+        className="rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm hover:bg-neutral-50"
+        onClick={() => setShowDischarged((v) => !v)}
+      >
+        {showDischarged ? "Hide Discharged" : "Show Discharged"}
+      </button>
+    </div>
         </div>
 
         <div className="mt-3 flex gap-2">
@@ -356,7 +368,9 @@ export default function BrowsePage() {
               </div>
 
               <div className="mt-2 space-y-2">
-                {rows.map((c) => {
+                {rows
+                  .filter((c) => showDischarged || !isDischarged(c.date_of_discharge))
+                  .map((c) => {
                   const discharged = isDischarged(c.date_of_discharge);
 
                   return (
@@ -377,7 +391,7 @@ export default function BrowsePage() {
                         href={`/cases?id=${c.id}`}
                         className={cn(
                           "block flex-1 rounded-2xl border p-3 transition hover:bg-neutral-50",
-                          discharged ? "border-neutral-200 bg-neutral-50" : "border-neutral-200 bg-white"
+                          discharged ? "border-neutral-200 bg-neutral-100 text-neutral-700" : "border-neutral-200 bg-white"
                         )}
                       >
                         <div className="flex items-start justify-between gap-2">
