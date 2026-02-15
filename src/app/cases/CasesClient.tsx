@@ -101,7 +101,7 @@ export default function CaseDetailPage() {
               Ward {row.ward} · Bed {row.bed}
             </div>
             <div className="mt-1 text-sm text-neutral-700">
-              {row.name} · {row.age}{row.sex}
+              {row.name} · {row.age}/{row.sex}
             </div>
             <div className="mt-1 text-xs text-neutral-500">
               {row.specialty}/{row.subspecialty} · {row.hospital}
