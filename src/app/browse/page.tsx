@@ -280,9 +280,7 @@ async function setDischarge(caseId: string, discharge: boolean) {
                           <div className="flex shrink-0 flex-col items-end gap-1">
                             {c.high_yield ? <Chip tone="good">High-yield</Chip> : null}
                             {!c.clerkable ? <Chip tone="warn">Not clerkable</Chip> : null}
-                          </div>
-                          
-                          <button
+                                                      <button
   className="mt-1 rounded-xl border border-neutral-200 bg-white px-2 py-1 text-xs"
   onClick={(e) => {
     e.preventDefault(); // don't follow Link
@@ -290,8 +288,9 @@ async function setDischarge(caseId: string, discharge: boolean) {
     setDischarge(c.id, !discharged);
   }}
 >
-  {discharged ? "Not discharged" : "Discharged"}
+  {discharged ? "Click if not discharged" : "Click if discharged"}
 </button>
+                          </div>
                         </div>
                       </Link>
                     </div>
