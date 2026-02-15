@@ -273,7 +273,10 @@ async function setDischarge(caseId: string, discharge: boolean) {
                               Bed {c.bed} · {c.name} · {c.age}/{c.sex}
                             </div>
                             <div className="mt-1 text-xs text-neutral-500">
-                              Adm: {formatDate(c.date_of_admission)} · Dis: {formatDate(c.date_of_discharge)}
+                              Adm: {formatDate(c.date_of_admission)}
+                            </div>
+                            <div className="mt-1 text-xs text-neutral-500">
+                              Dis: {formatDate(c.date_of_discharge)}
                             </div>
                           </div>
 
