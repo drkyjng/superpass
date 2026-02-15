@@ -5,10 +5,9 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/browser";
 import { CaseRow } from "@/lib/types";
 import { Chip } from "@/components/ui/Chip";
-import { cn, formatDate, formatDateTime, isDischarged } from "@/lib/utils";
+import { cn, formatDate, isDischarged } from "@/lib/utils";
 import { SPECIALTIES, MED_SUBS, SUR_SUBS } from "@/lib/constants";
 import { loadFilters } from "@/lib/filters";
-import { Button } from "@/components/ui/Button";
 import { Settings2 } from "lucide-react";
 
 type Folder = { specialty: "MED" | "SUR"; subspecialty: string };
@@ -21,8 +20,6 @@ function folderList(): Folder[] {
 }
 
 function applyOrdering(rows: CaseRow[]) {
-  // Group by hospital + ward, then within each group:
-  // current admissions first, then discharged, each sorted by date_of_admission asc.
   const byGroup = new Map<string, { hospital: CaseRow["hospital"]; ward: string; rows: CaseRow[] }>();
 
   for (const r of rows) {
@@ -60,6 +57,10 @@ export default function BrowsePage() {
   const [error, setError] = useState<string | null>(null);
   const [filtersVersion, setFiltersVersion] = useState(0);
 
+  // (3) Per-user clerked ticks
+  const [meId, setMeId] = useState<string | null>(null);
+  const [clerked, setClerked] = useState<Set<string>>(new Set());
+
   const folders = useMemo(() => folderList(), []);
 
   useEffect(() => {
@@ -67,6 +68,52 @@ export default function BrowsePage() {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, []);
+
+  async function loadClerked(uid: string | null) {
+    setMeId(uid);
+    if (!uid) {
+      setClerked(new Set());
+      return;
+    }
+    const { data: ticks, error: tickErr } = await supabase
+      .from("case_clerks")
+      .select("case_id")
+      .eq("user_id", uid);
+
+    if (tickErr) {
+      console.warn("Failed loading clerked ticks:", tickErr.message);
+      setClerked(new Set());
+      return;
+    }
+    setClerked(new Set((ticks ?? []).map((t: any) => t.case_id)));
+  }
+
+  async function toggleClerked(caseId: string, checked: boolean) {
+    if (!meId) return;
+
+    if (checked) {
+      const { error } = await supabase.from("case_clerks").insert({
+        user_id: meId,
+        case_id: caseId,
+      });
+      if (error) {
+        alert(error.message);
+        return;
+      }
+      setClerked((prev) => new Set(prev).add(caseId));
+    } else {
+      const { error } = await supabase.from("case_clerks").delete().eq("user_id", meId).eq("case_id", caseId);
+      if (error) {
+        alert(error.message);
+        return;
+      }
+      setClerked((prev) => {
+        const n = new Set(prev);
+        n.delete(caseId);
+        return n;
+      });
+    }
+  }
 
   useEffect(() => {
     (async () => {
@@ -83,7 +130,6 @@ export default function BrowsePage() {
         .eq("specialty", active.specialty)
         .eq("subspecialty", active.subspecialty);
 
-      // Optional global filters:
       if (f.specialty) q = q.eq("specialty", f.specialty);
       if (f.subspecialty) q = q.eq("subspecialty", f.subspecialty);
       if (f.hospital) q = q.eq("hospital", f.hospital);
@@ -91,15 +137,12 @@ export default function BrowsePage() {
       if (f.clerkable) q = q.eq("clerkable", f.clerkable === "true");
       if (f.high_yield) q = q.eq("high_yield", f.high_yield === "true");
 
-      // Free-text-ish keyword search: use ilike over multiple fields (client-side OR fallback)
-      // PostgREST OR syntax:
       if (f.q.trim()) {
-        const term = f.q.trim().replaceAll(",", " "); // avoid breaking OR syntax
+        const term = f.q.trim().replaceAll(",", " ");
         const like = `%${term}%`;
         q = q.or(`name.ilike.${like},conditions.ilike.${like},signs.ilike.${like},remarks.ilike.${like}`);
       }
 
-      // Keep a stable base sort; final ordering in client per your ward/current/discharged rules
       q = q.order("ward", { ascending: true }).order("date_of_admission", { ascending: true }).order("created_at", { ascending: true });
 
       const { data, error } = await q;
@@ -109,6 +152,10 @@ export default function BrowsePage() {
         return;
       }
       setRows((data ?? []) as any);
+
+      // (3) Load clerked ticks for this user
+      const { data: userData } = await supabase.auth.getUser();
+      await loadClerked(userData.user?.id ?? null);
     })();
   }, [supabase, active, filtersVersion]);
 
@@ -122,7 +169,10 @@ export default function BrowsePage() {
             <div className="text-sm font-semibold">Folders</div>
             <div className="text-xs text-neutral-600">MED / SUR → subspecialty</div>
           </div>
-          <Link href="/filters" className="inline-flex items-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm hover:bg-neutral-50">
+          <Link
+            href="/filters"
+            className="inline-flex items-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm hover:bg-neutral-50"
+          >
             <Settings2 size={16} />
             Filters
           </Link>
@@ -167,9 +217,7 @@ export default function BrowsePage() {
       ) : error ? (
         <div className="rounded-2xl border border-red-100 bg-red-50 p-4 text-sm text-red-700">{error}</div>
       ) : ordered.length === 0 ? (
-        <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-700">
-          No cases in this folder (with current filters).
-        </div>
+        <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-700">No cases in this folder (with current filters).</div>
       ) : (
         <div className="space-y-3">
           {ordered.map(({ hospital, ward, rows }) => (
@@ -185,31 +233,43 @@ export default function BrowsePage() {
                 {rows.map((c) => {
                   const discharged = isDischarged(c.date_of_discharge);
                   return (
-                    <Link
-                      key={c.id}
-                      href={`/cases?id=${c.id}`}
-                      className={cn(
-                        "block rounded-2xl border p-3 transition hover:bg-neutral-50",
-                        discharged ? "border-neutral-200 bg-neutral-50" : "border-neutral-200 bg-white"
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-semibold">
-                            Bed {c.bed} · {c.name} · {c.age}/
-                            {c.sex}
-                          </div>
-                          <div className="mt-1 text-xs text-neutral-500">
-                            Adm: {formatDate(c.date_of_admission)} · Dis: {formatDate(c.date_of_discharge)}
-                          </div>
-                        </div>
-
-                        <div className="flex shrink-0 flex-col items-end gap-1">
-                          {c.high_yield ? <Chip tone="good">High-yield</Chip> : null}
-                          {!c.clerkable ? <Chip tone="warn">Not clerkable</Chip> : null}
-                        </div>
+                    <div key={c.id} className="flex items-stretch gap-2">
+                      <div className="flex items-center pl-1">
+                        <input
+                          type="checkbox"
+                          className="h-5 w-5"
+                          checked={clerked.has(c.id)}
+                          onChange={(e) => toggleClerked(c.id, e.target.checked)}
+                          onClick={(e) => e.stopPropagation()}
+                          disabled={!meId}
+                          title={!meId ? "Sign in to save clerked ticks" : "Mark as clerked"}
+                        />
                       </div>
-                    </Link>
+
+                      <Link
+                        href={`/cases?id=${c.id}`}
+                        className={cn(
+                          "block flex-1 rounded-2xl border p-3 transition hover:bg-neutral-50",
+                          discharged ? "border-neutral-200 bg-neutral-50" : "border-neutral-200 bg-white"
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-semibold">
+                              Bed {c.bed} · {c.name} · {c.age}/{c.sex}
+                            </div>
+                            <div className="mt-1 text-xs text-neutral-500">
+                              Adm: {formatDate(c.date_of_admission)} · Dis: {formatDate(c.date_of_discharge)}
+                            </div>
+                          </div>
+
+                          <div className="flex shrink-0 flex-col items-end gap-1">
+                            {c.high_yield ? <Chip tone="good">High-yield</Chip> : null}
+                            {!c.clerkable ? <Chip tone="warn">Not clerkable</Chip> : null}
+                          </div>
+                        </div>
+                      </Link>
+                    </div>
                   );
                 })}
               </div>
