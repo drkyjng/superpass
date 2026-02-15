@@ -20,6 +20,8 @@ function folderList(): Folder[] {
 }
 
 function applyOrdering(rows: CaseRow[]) {
+  // Group by hospital + ward, then within each group:
+  // current admissions first, then discharged, each sorted by date_of_admission asc.
   const byGroup = new Map<string, { hospital: CaseRow["hospital"]; ward: string; rows: CaseRow[] }>();
 
   for (const r of rows) {
@@ -61,7 +63,9 @@ export default function BrowsePage() {
   const [meId, setMeId] = useState<string | null>(null);
   const [clerked, setClerked] = useState<Set<string>>(new Set());
 
-  const folders = useMemo(() => folderList(), []);
+  // (5) Notifications
+  const [unread, setUnread] = useState(0);
+  const [latestNotifs, setLatestNotifs] = useState<{ id: string; title: string; body: string; created_at: string }[]>([]);
 
   useEffect(() => {
     const onFocus = () => setFiltersVersion((v) => v + 1);
@@ -75,11 +79,7 @@ export default function BrowsePage() {
       setClerked(new Set());
       return;
     }
-    const { data: ticks, error: tickErr } = await supabase
-      .from("case_clerks")
-      .select("case_id")
-      .eq("user_id", uid);
-
+    const { data: ticks, error: tickErr } = await supabase.from("case_clerks").select("case_id").eq("user_id", uid);
     if (tickErr) {
       console.warn("Failed loading clerked ticks:", tickErr.message);
       setClerked(new Set());
@@ -92,21 +92,12 @@ export default function BrowsePage() {
     if (!meId) return;
 
     if (checked) {
-      const { error } = await supabase.from("case_clerks").insert({
-        user_id: meId,
-        case_id: caseId,
-      });
-      if (error) {
-        alert(error.message);
-        return;
-      }
+      const { error } = await supabase.from("case_clerks").insert({ user_id: meId, case_id: caseId });
+      if (error) return alert(error.message);
       setClerked((prev) => new Set(prev).add(caseId));
     } else {
       const { error } = await supabase.from("case_clerks").delete().eq("user_id", meId).eq("case_id", caseId);
-      if (error) {
-        alert(error.message);
-        return;
-      }
+      if (error) return alert(error.message);
       setClerked((prev) => {
         const n = new Set(prev);
         n.delete(caseId);
@@ -115,20 +106,47 @@ export default function BrowsePage() {
     }
   }
 
-async function setDischarge(caseId: string, discharge: boolean) {
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-  const payload = discharge ? { date_of_discharge: today } : { date_of_discharge: null };
+  async function loadNotifications(uid: string | null) {
+    if (!uid) {
+      setUnread(0);
+      setLatestNotifs([]);
+      return;
+    }
 
-  const { error } = await supabase.from("cases").update(payload).eq("id", caseId);
-  if (error) {
-    alert(error.message);
-    return;
+    const { count, error: cntErr } = await supabase
+      .from("notifications")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", uid)
+      .is("read_at", null);
+
+    if (!cntErr) setUnread(count ?? 0);
+
+    const { data, error } = await supabase
+      .from("notifications")
+      .select("id,title,body,created_at")
+      .eq("user_id", uid)
+      .is("read_at", null)
+      .order("created_at", { ascending: false })
+      .limit(3);
+
+    if (!error) setLatestNotifs((data ?? []) as any);
   }
 
-  // Refresh the list quickly (simplest approach)
-  window.location.reload();
-}
-  
+  async function markAllNotificationsRead() {
+    if (!meId) return;
+    const now = new Date().toISOString();
+    const { error } = await supabase
+      .from("notifications")
+      .update({ read_at: now })
+      .eq("user_id", meId)
+      .is("read_at", null);
+
+    if (error) return alert(error.message);
+
+    setUnread(0);
+    setLatestNotifs([]);
+  }
+
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -165,11 +183,14 @@ async function setDischarge(caseId: string, discharge: boolean) {
         setError(error.message);
         return;
       }
+
       setRows((data ?? []) as any);
 
-      // (3) Load clerked ticks for this user
+      // user-dependent fetches
       const { data: userData } = await supabase.auth.getUser();
-      await loadClerked(userData.user?.id ?? null);
+      const uid = userData.user?.id ?? null;
+      await loadClerked(uid);
+      await loadNotifications(uid);
     })();
   }, [supabase, active, filtersVersion]);
 
@@ -226,6 +247,30 @@ async function setDischarge(caseId: string, discharge: boolean) {
         </div>
       </div>
 
+      {unread > 0 ? (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="font-semibold">High-yield notifications ({unread})</div>
+              <div className="mt-1 space-y-1 text-xs text-amber-900/90">
+                {latestNotifs.map((n) => (
+                  <div key={n.id} className="truncate">
+                    <span className="font-medium">{n.title}:</span> {n.body}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <button
+              className="shrink-0 rounded-xl border border-amber-200 bg-white px-3 py-2 text-xs hover:bg-amber-50"
+              onClick={markAllNotificationsRead}
+            >
+              Mark read
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {loading ? (
         <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-700">Loading…</div>
       ) : error ? (
@@ -273,26 +318,13 @@ async function setDischarge(caseId: string, discharge: boolean) {
                               Bed {c.bed} · {c.name} · {c.age}/{c.sex}
                             </div>
                             <div className="mt-1 text-xs text-neutral-500">
-                              Adm: {formatDate(c.date_of_admission)}
-                            </div>
-                            <div className="mt-1 text-xs text-neutral-500">
-                              Dis: {formatDate(c.date_of_discharge)}
+                              Adm: {formatDate(c.date_of_admission)} · Dis: {formatDate(c.date_of_discharge)}
                             </div>
                           </div>
 
                           <div className="flex shrink-0 flex-col items-end gap-1">
                             {c.high_yield ? <Chip tone="good">High-yield</Chip> : null}
                             {!c.clerkable ? <Chip tone="warn">Not clerkable</Chip> : null}
-                                                      <button
-  className="mt-1 rounded-xl border border-neutral-200 bg-white px-2 py-1 text-xs"
-  onClick={(e) => {
-    e.preventDefault(); // don't follow Link
-    e.stopPropagation();
-    setDischarge(c.id, !discharged);
-  }}
->
-  {discharged ? "Click if not discharged" : "Click if discharged"}
-</button>
                           </div>
                         </div>
                       </Link>
