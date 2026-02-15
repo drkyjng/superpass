@@ -2,19 +2,23 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/browser";
 import { CaseRow } from "@/lib/types";
+import { Chip } from "@/components/ui/Chip";
 import { cn, formatDate, isDischarged } from "@/lib/utils";
 import { SPECIALTIES, MED_SUBS, SUR_SUBS } from "@/lib/constants";
 import { loadFilters } from "@/lib/filters";
-import { Chip } from "@/components/ui/Chip";
 import { Settings2 } from "lucide-react";
-import { Button } from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
 
 type Folder = { specialty: "MED" | "SUR"; subspecialty: string };
 type NotifRow = { id: string; title: string; body: string; created_at: string };
+
+function foldersFromConst(specialty: Folder["specialty"]) {
+  const subs = specialty === "MED" ? MED_SUBS : SUR_SUBS;
+  const out: Folder[] = [];
+  for (const ss of subs) out.push({ specialty, subspecialty: ss });
+  return out;
+}
 
 function bedSortKey(bed: any): { n: number; s: string } {
   const raw = String(bed ?? "").trim().toUpperCase();
@@ -40,7 +44,7 @@ function applyOrdering(rows: CaseRow[]) {
   const byGroup = new Map<string, { hospital: CaseRow["hospital"]; ward: string; rows: CaseRow[] }>();
 
   for (const r of rows) {
-    const ward = String((r as any).ward ?? "").trim();
+    const ward = r.ward.trim();
     const key = `${r.hospital}::${ward}`;
     if (!byGroup.has(key)) byGroup.set(key, { hospital: r.hospital, ward, rows: [] });
     byGroup.get(key)!.rows.push(r);
@@ -52,34 +56,39 @@ function applyOrdering(rows: CaseRow[]) {
     return a.ward.localeCompare(b.ward, undefined, { numeric: true });
   });
 
-  return groups.map((g) => {
-    const current = g.rows.filter((x) => !isDischarged(x.date_of_discharge)).sort(compareBed);
-    const discharged = g.rows.filter((x) => isDischarged(x.date_of_discharge)).sort(compareBed);
-    return { hospital: g.hospital, ward: g.ward, rows: [...current, ...discharged] };
-  });
+  const ordered: { hospital: CaseRow["hospital"]; ward: string; rows: CaseRow[] }[] = [];
+  for (const g of groups) {
+    const list = g.rows;
+
+    // ✅ Current first, then discharged; within each group: ✅ bed asc
+    const current = list.filter((x) => !isDischarged(x.date_of_discharge)).sort(compareBed);
+    const discharged = list.filter((x) => isDischarged(x.date_of_discharge)).sort(compareBed);
+
+    ordered.push({ hospital: g.hospital, ward: g.ward, rows: [...current, ...discharged] });
+  }
+  return ordered;
 }
 
 export default function BrowsePage() {
   const supabase = useMemo(() => createClient(), []);
-  const router = useRouter();
 
   const [active, setActive] = useState<Folder>({ specialty: "MED", subspecialty: "CARD" });
-
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<CaseRow[]>([]);
   const [error, setError] = useState<string | null>(null);
-
   const [filtersVersion, setFiltersVersion] = useState(0);
 
+  // Discharged visibility toggle
   const [showDischarged, setShowDischarged] = useState(false);
 
+  // Per-user clerked ticks
   const [meId, setMeId] = useState<string | null>(null);
   const [clerked, setClerked] = useState<Set<string>>(new Set());
 
+  // High-yield notifications (unread banner)
   const [unread, setUnread] = useState(0);
   const [latestNotifs, setLatestNotifs] = useState<NotifRow[]>([]);
 
-  // Re-pull filters when user comes back from /filters
   useEffect(() => {
     const onFocus = () => setFiltersVersion((v) => v + 1);
     window.addEventListener("focus", onFocus);
@@ -93,6 +102,7 @@ export default function BrowsePage() {
       return;
     }
     const { data: ticks, error: tickErr } = await supabase.from("case_clerks").select("case_id").eq("user_id", uid);
+
     if (tickErr) {
       console.warn("Failed loading clerked ticks:", tickErr.message);
       setClerked(new Set());
@@ -126,7 +136,7 @@ export default function BrowsePage() {
   }
 
   async function setDischarge(caseId: string, discharge: boolean) {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
     const payload = discharge ? { date_of_discharge: today } : { date_of_discharge: null };
 
     const { error } = await supabase.from("cases").update(payload).eq("id", caseId);
@@ -135,8 +145,8 @@ export default function BrowsePage() {
       return;
     }
 
-    // simple refresh
-    setFiltersVersion((v) => v + 1);
+    // simplest: refresh
+    window.location.reload();
   }
 
   async function loadNotifications(uid: string | null) {
@@ -146,15 +156,20 @@ export default function BrowsePage() {
       return;
     }
 
+    // Count unread
     const { count, error: cntErr } = await supabase
       .from("notifications")
       .select("id", { count: "exact", head: true })
       .eq("user_id", uid)
       .is("read_at", null);
 
-    if (cntErr) console.warn("Failed loading notifications count:", cntErr.message);
-    else setUnread(count ?? 0);
+    if (cntErr) {
+      console.warn("Failed loading notifications count:", cntErr.message);
+    } else {
+      setUnread(count ?? 0);
+    }
 
+    // Fetch latest unread (show up to 3)
     const { data, error } = await supabase
       .from("notifications")
       .select("id,title,body,created_at")
@@ -188,7 +203,7 @@ export default function BrowsePage() {
     setLatestNotifs([]);
   }
 
-  // Load user (for clerked + notifications)
+  // (0) Load user + initial notifications
   useEffect(() => {
     (async () => {
       const { data: userData } = await supabase.auth.getUser();
@@ -199,7 +214,7 @@ export default function BrowsePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase]);
 
-  // Realtime: notifications inserted for this user
+  // (5) Realtime: when a new notification is inserted for THIS user, update banner immediately.
   useEffect(() => {
     if (!meId) return;
 
@@ -229,11 +244,8 @@ export default function BrowsePage() {
     };
   }, [supabase, meId]);
 
-  /**
-   * ✅ FIX (1): notifications missing for NEW high-yield cases
-   * Fallback realtime listener on cases INSERT where high_yield=true.
-   * This covers the exact gap: "new cases don't notify, but edits do".
-   */
+  // (5b) Fallback: if NEW cases created as high_yield are not inserting into `notifications`,
+  // show an in-app banner by listening directly to cases INSERT where high_yield=true.
   useEffect(() => {
     if (!meId) return;
 
@@ -247,7 +259,7 @@ export default function BrowsePage() {
           table: "cases",
           filter: "high_yield=eq.true",
         },
-        async (payload) => {
+        (payload) => {
           const c = payload.new as any;
 
           const createdAt = String(c?.created_at ?? new Date().toISOString());
@@ -258,12 +270,8 @@ export default function BrowsePage() {
             created_at: createdAt,
           };
 
-          // Show immediately
           setUnread((u) => u + 1);
           setLatestNotifs((prev) => [synthetic, ...prev].slice(0, 3));
-
-          // If your DB trigger DID insert into notifications, sync to real list/count
-          await loadNotifications(meId);
         }
       )
       .subscribe();
@@ -273,7 +281,6 @@ export default function BrowsePage() {
     };
   }, [supabase, meId]);
 
-  // Load cases for current folder + filters
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -292,11 +299,11 @@ export default function BrowsePage() {
       if (f.specialty) q = q.eq("specialty", f.specialty);
       if (f.subspecialty) q = q.eq("subspecialty", f.subspecialty);
       if (f.hospital) q = q.eq("hospital", f.hospital);
-      if (f.ward?.trim()) q = q.eq("ward", f.ward.trim());
+      if (f.ward.trim()) q = q.eq("ward", f.ward.trim());
       if (f.clerkable) q = q.eq("clerkable", f.clerkable === "true");
       if (f.high_yield) q = q.eq("high_yield", f.high_yield === "true");
 
-      if (f.q?.trim()) {
+      if (f.q.trim()) {
         const term = f.q.trim().replaceAll(",", " ");
         const like = `%${term}%`;
         q = q.or(`name.ilike.${like},conditions.ilike.${like},signs.ilike.${like},remarks.ilike.${like}`);
@@ -317,12 +324,10 @@ export default function BrowsePage() {
 
   return (
     <div className="space-y-3">
-      {/* Folder / Controls */}
       <div className="rounded-2xl bg-white p-3 shadow-soft">
         <div className="flex items-center justify-between">
           <div>
             <div className="text-sm font-semibold">Folders</div>
-            <div className="text-xs text-neutral-600">MED / SUR → subspecialty</div>
           </div>
 
           <div className="flex items-center gap-2">
@@ -364,24 +369,23 @@ export default function BrowsePage() {
         </div>
 
         <div className="mt-3 grid grid-cols-3 gap-2">
-          {(active.specialty === "MED" ? MED_SUBS : SUR_SUBS).map((ss) => (
+          {foldersFromConst(active.specialty).map((f) => (
             <button
-              key={ss}
+              key={`${f.specialty}:${f.subspecialty}`}
               className={cn(
                 "rounded-xl border px-2 py-2 text-xs font-semibold",
-                active.subspecialty === ss
+                active.subspecialty === f.subspecialty
                   ? "border-neutral-900 bg-neutral-900 text-white"
                   : "border-neutral-200 bg-white hover:bg-neutral-50"
               )}
-              onClick={() => setActive((a) => ({ ...a, subspecialty: ss }))}
+              onClick={() => setActive({ specialty: f.specialty, subspecialty: f.subspecialty })}
             >
-              {ss}
+              {f.subspecialty}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Notifications banner */}
       {unread > 0 ? (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
           <div className="flex items-start justify-between gap-3">
@@ -406,7 +410,6 @@ export default function BrowsePage() {
         </div>
       ) : null}
 
-      {/* Body */}
       {loading ? (
         <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-700">Loading…</div>
       ) : error ? (
@@ -487,10 +490,6 @@ export default function BrowsePage() {
           ))}
         </div>
       )}
-
-      <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-xs text-neutral-600">
-        Ordering: Hospital+Ward → current (bed asc) → discharged (bed asc).
-      </div>
     </div>
   );
 }
