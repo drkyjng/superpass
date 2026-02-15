@@ -199,9 +199,6 @@ export default function BrowsePage() {
                             Bed {c.bed} · {c.name} · {c.age}
                             {c.sex}
                           </div>
-                          <div className="mt-1 line-clamp-2 text-xs text-neutral-600">
-                            <span className="font-medium">Dx:</span> {c.conditions}
-                          </div>
                           <div className="mt-1 text-xs text-neutral-500">
                             Adm: {formatDate(c.date_of_admission)} · Dis: {formatDate(c.date_of_discharge)}
                           </div>
