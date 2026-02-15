@@ -267,7 +267,6 @@ export default function BrowsePage() {
         <div className="flex items-center justify-between">
           <div>
             <div className="text-sm font-semibold">Folders</div>
-            <div className="text-xs text-neutral-600">MED / SUR → subspecialty</div>
           </div>
     <div className="flex items-center gap-2">
       <Link
@@ -426,10 +425,6 @@ export default function BrowsePage() {
           ))}
         </div>
       )}
-
-      <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-xs text-neutral-600">
-        Ordering: Hospital+Ward → current admissions → discharged → date of admission.
-      </div>
     </div>
   );
 }
