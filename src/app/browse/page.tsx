@@ -59,8 +59,6 @@ export default function BrowsePage() {
   const [error, setError] = useState<string | null>(null);
   const [filtersVersion, setFiltersVersion] = useState(0);
   const [showDischarged, setShowDischarged] = useState(false);
-  const visibleRows = rows.filter((c) => showDischarged || !isDischarged(c.date_of_discharge));
-if (visibleRows.length === 0) return null;
 
   // (3) Per-user clerked ticks
   const [meId, setMeId] = useState<string | null>(null);
