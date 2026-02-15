@@ -21,25 +21,33 @@ function folderList(): Folder[] {
 }
 
 function applyOrdering(rows: CaseRow[]) {
-  // Group by ward, then within ward current first, then discharged, each sorted by date_of_admission asc.
-  const byWard = new Map<string, CaseRow[]>();
+  // Group by hospital + ward, then within each group:
+  // current admissions first, then discharged, each sorted by date_of_admission asc.
+  const byGroup = new Map<string, { hospital: CaseRow["hospital"]; ward: string; rows: CaseRow[] }>();
+
   for (const r of rows) {
-    const key = r.ward.trim();
-    if (!byWard.has(key)) byWard.set(key, []);
-    byWard.get(key)!.push(r);
+    const ward = r.ward.trim();
+    const key = `${r.hospital}::${ward}`;
+    if (!byGroup.has(key)) byGroup.set(key, { hospital: r.hospital, ward, rows: [] });
+    byGroup.get(key)!.rows.push(r);
   }
 
-  const wards = Array.from(byWard.keys()).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  const ordered: { ward: string; rows: CaseRow[] }[] = [];
-  for (const ward of wards) {
-    const list = byWard.get(ward)!;
+  const groups = Array.from(byGroup.values()).sort((a, b) => {
+    const h = a.hospital.localeCompare(b.hospital);
+    if (h !== 0) return h;
+    return a.ward.localeCompare(b.ward, undefined, { numeric: true });
+  });
+
+  const ordered: { hospital: CaseRow["hospital"]; ward: string; rows: CaseRow[] }[] = [];
+  for (const g of groups) {
+    const list = g.rows;
     const current = list
       .filter((x) => !isDischarged(x.date_of_discharge))
       .sort((a, b) => a.date_of_admission.localeCompare(b.date_of_admission) || a.created_at.localeCompare(b.created_at));
     const discharged = list
       .filter((x) => isDischarged(x.date_of_discharge))
       .sort((a, b) => a.date_of_admission.localeCompare(b.date_of_admission) || a.created_at.localeCompare(b.created_at));
-    ordered.push({ ward, rows: [...current, ...discharged] });
+    ordered.push({ hospital: g.hospital, ward: g.ward, rows: [...current, ...discharged] });
   }
   return ordered;
 }
@@ -155,9 +163,7 @@ export default function BrowsePage() {
       </div>
 
       {loading ? (
-        <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-700">
-          Loading…
-        </div>
+        <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-700">Loading…</div>
       ) : error ? (
         <div className="rounded-2xl border border-red-100 bg-red-50 p-4 text-sm text-red-700">{error}</div>
       ) : ordered.length === 0 ? (
@@ -166,10 +172,12 @@ export default function BrowsePage() {
         </div>
       ) : (
         <div className="space-y-3">
-          {ordered.map(({ ward, rows }) => (
-            <section key={ward} className="rounded-2xl bg-white p-3 shadow-soft">
+          {ordered.map(({ hospital, ward, rows }) => (
+            <section key={`${hospital}::${ward}`} className="rounded-2xl bg-white p-3 shadow-soft">
               <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold">Ward {ward}</div>
+                <div className="text-sm font-semibold">
+                  {hospital} Ward {ward}
+                </div>
                 <Chip>{rows.length} cases</Chip>
               </div>
 
@@ -188,7 +196,8 @@ export default function BrowsePage() {
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <div className="truncate text-sm font-semibold">
-                            Bed {c.bed} · {c.name} · {c.age}{c.sex}
+                            Bed {c.bed} · {c.name} · {c.age}
+                            {c.sex}
                           </div>
                           <div className="mt-1 line-clamp-2 text-xs text-neutral-600">
                             <span className="font-medium">Dx:</span> {c.conditions}
@@ -214,7 +223,7 @@ export default function BrowsePage() {
       )}
 
       <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-xs text-neutral-600">
-        Ordering: Ward → current admissions → discharged → date of admission.
+        Ordering: Hospital+Ward → current admissions → discharged → date of admission.
       </div>
     </div>
   );
