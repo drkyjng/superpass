@@ -207,7 +207,6 @@ export default function BrowsePage() {
                         <div className="flex shrink-0 flex-col items-end gap-1">
                           {c.high_yield ? <Chip tone="good">High-yield</Chip> : null}
                           {!c.clerkable ? <Chip tone="warn">Not clerkable</Chip> : null}
-                          <Chip>{c.hospital}</Chip>
                         </div>
                       </div>
                     </Link>
