@@ -115,6 +115,20 @@ export default function BrowsePage() {
     }
   }
 
+async function setDischarge(caseId: string, discharge: boolean) {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const payload = discharge ? { date_of_discharge: today } : { date_of_discharge: null };
+
+  const { error } = await supabase.from("cases").update(payload).eq("id", caseId);
+  if (error) {
+    alert(error.message);
+    return;
+  }
+
+  // Refresh the list quickly (simplest approach)
+  window.location.reload();
+}
+  
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -267,6 +281,17 @@ export default function BrowsePage() {
                             {c.high_yield ? <Chip tone="good">High-yield</Chip> : null}
                             {!c.clerkable ? <Chip tone="warn">Not clerkable</Chip> : null}
                           </div>
+                          
+                          <button
+  className="mt-1 rounded-xl border border-neutral-200 bg-white px-2 py-1 text-xs"
+  onClick={(e) => {
+    e.preventDefault(); // don't follow Link
+    e.stopPropagation();
+    setDischarge(c.id, !discharged);
+  }}
+>
+  {discharged ? "Not discharged" : "Discharged"}
+</button>
                         </div>
                       </Link>
                     </div>
